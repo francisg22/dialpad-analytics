@@ -1,0 +1,224 @@
+# Dialpad Stats API — Reference
+
+Reference for the **Stats API** (`POST /api/v2/stats` + `GET /api/v2/stats/{request_id}`),
+covering every request-body parameter and every column in the returned `calls` CSV.
+
+- **Request body params** are taken verbatim from the installed SDK schema
+  (`python-dialpad` → `dialpad/schemas/stats.py`, `ProcessStatsMessage`).
+- **CSV column definitions** are from Dialpad's analytics docs
+  (help.dialpad.com/docs/read-your-exported-analytics), cross-checked against a real
+  `stat_type=calls, export_type=stats, group_by=date` export.
+
+> **Units gotcha:** In the export, `asa` and every `*_duration` / `acd` / `aht` /
+> `minutes` column are in **MINUTES**, not seconds. (e.g. `asa=0.9` = 0.9 min ≈ 54s.)
+> Counts are integers; rates must be computed yourself.
+
+---
+
+## 1. Request body parameters (`POST /api/v2/stats`)
+
+| Param | Type / Allowed values | Required | Default | What it does |
+|-------|----------------------|----------|---------|--------------|
+| `stat_type` | `calls`, `csat`, `dispositions`, `onduty`, `recordings`, `screenshare`, `texts`, `voicemails` | **Yes** | — | The category of statistics to return. |
+| `export_type` | `stats`, `records` | **Yes** | — | `stats` = pre-aggregated summary rows. `records` = one row per individual event. **`csat` and `dispositions` support `records` only.** |
+| `group_by` | `date`, `group`, `user` | No | `user` | **Applies to `stat_type=calls` only.** `user` = per agent per day (default). `date` = totals per day. `group` = breakdown by department & call center — **office-scoped targets only** (errors with a `callcenter` target). |
+| `days_ago_start` | int | No | `1` | Start of the range = the **more recent** bound, as days back from today. `1` = yesterday. **Must be the smaller number.** |
+| `days_ago_end` | int | No | `30` | End of the range = the **further-back** bound, as days back from today. `30` = 30 days ago. **Must be the larger number.** `start`/`end` reversed → empty range → all-zero rows. |
+| `is_today` | bool | No | `false` | Query the current day from real-time tables (refreshed ~every 30 min). **Overrides `days_ago_start`/`days_ago_end`.** `days_ago_start=0, days_ago_end=0` behaves the same as `is_today=true`. |
+| `office_id` | int | No | — | Limit stats to one office. **Ignored if `target_id`+`target_type` are supplied** (the target wins). |
+| `target_id` | int | No | — | The specific target's ID (e.g. a call center). |
+| `target_type` | `callcenter`, `department`, `office`, `user`, `room`, `coachinggroup`, `coachingteam`, `staffgroup`, `unknown` | No | — | The target's type. **Required when `stat_type` is `csat` or `dispositions`.** |
+| `coaching_group` | bool | No | `false` | Return stats for trainees of the coaching **group** with the given `target_id`. |
+| `coaching_team` | bool | No | `false` | Return stats for trainees of the coaching **team** with the given `target_id`. |
+| `timezone` | string (tz database name, e.g. `America/Phoenix`) | No | — | Timezone used to bucket the data by day. |
+
+### Scoping precedence
+Whole company (default) → `office_id` narrows to one office → `target_id`+`target_type`
+overrides `office_id` and narrows to one target.
+
+### `POST` response (`ProcessingProto`)
+| Field | Meaning |
+|-------|---------|
+| `request_id` | ID to poll with `GET /api/v2/stats/{request_id}`. |
+| `already_started` | `true` = this exact request was already processing/cached; you'll get the cached result (the "returns instantly" symptom). |
+
+### `GET` response (`StatsProto`)
+| Field | Meaning |
+|-------|---------|
+| `status` | `processing` \| `complete` \| `failed`. |
+| `download_url` | URL of the result file (you fetch the bytes yourself — the SDK does not download it). |
+| `file_type` | File format, e.g. `csv`. |
+
+### Caching & rate limits
+- `POST /stats` rate limit: **200 / hour**. `GET /stats/{id}` limit: **1200 / minute**.
+- Results cached: **3 hours** for `days_ago` requests, **30 minutes** for `is_today`.
+- An **identical** POST within the cache window is **not** reprocessed — it returns the
+  cached file. **There is no documented cache-bust.** To force fresh processing: change a
+  parameter (even `days_ago_end` ±1) or wait out the window.
+- Polling etiquette: wait ~15–20s after POST, then poll every 5–10s.
+
+---
+
+## 1b. Aggregating multiple call centers in one call
+
+There is **no way to pass a list of specific call-center IDs** — `target_id` accepts a
+single ID only. But `office_id` aggregates everything under an office, and the docs state:
+*"office_id can be used as a way to combine reports for all eligible targets under that
+office, without supplying the target information."* (Verified against a live pull.)
+
+| Goal | One call? | How |
+|------|-----------|-----|
+| **Combined total across a whole office** | ✅ Yes | `office_id=<office>` + `group_by="date"` → one row **per day** with summed totals across all targets under that office. Sum the days for the period. No `target_id`. |
+| **Per-call-center rows for a whole office** (then sum a subset yourself) | ✅ Yes | `office_id=<office>` + `group_by="group"` → one row **per target**, with added `name` and `type` columns (no `date` column). Filter rows to the call centers you want and sum. |
+| **A specific subset of call centers under one office** | ⚠️ One call + client filter | Use the `group_by="group"` call above, then keep only the rows whose `name`/`type` match your targets. |
+| **Call centers spanning multiple offices** | ❌ No single call | Loop one POST per office (`group_by="group"`) or one per call center (`target_id`), then sum client-side. |
+
+Notes:
+- `group_by="group"` is **office-scoped only** — it errors if combined with a `callcenter` `target_id`.
+- The `group_by="group"` export header differs from the daily export: it leads with
+  `name,type,...` instead of `date,...`, and `type` distinguishes Call Center vs Department vs user rows.
+- ⚠️ **PII:** `group_by="group"` rows include individual agent/user **names** in the `name`
+  column. Treat those exports as internal personnel data — keep them out of version control
+  (`*.csv` ignore) and don't share externally.
+- Rate limit is 200 POST/hr, so looping per-call-center across ~20 targets is well within budget
+  if you can't use a single office rollup.
+
+---
+
+## 2. Returned CSV columns (`stat_type=calls`, `export_type=stats`)
+
+`group_by=date` adds a leading `date` column (one row per day); `group_by=group` omits
+`date` (one row per call center/department). All columns below otherwise match.
+
+### Identity / bucketing
+| Column | Definition |
+|--------|-----------|
+| `date` | The day the row covers (present with `group_by=date`). |
+| `timezone` | Timezone the data was bucketed in. |
+
+### Volume (counts)
+| Column | Definition |
+|--------|-----------|
+| `all_calls` | Total of all calls (inbound, outbound, missed, abandoned, and canceled). |
+| `inbound_calls` | Total inbound calls (answered, missed, abandoned, voicemail, unanswered transfer, spam, message, or callback-requested). |
+| `outbound_calls` | Total outbound calls (outbound connected, cancelled, or callback attempts). |
+| `missed` | Number of missed calls. |
+| `abandoned` | Number of abandoned calls (caller hung up while waiting). |
+| `short_abandoned` | Calls classified as short-abandoned (quick hang-ups). **Contact Center targets only** — often excluded from abandon rate. |
+| `cancelled` | Outbound calls that rang out and never connected to a human or voicemail. |
+| `forwarded` | Forwarded calls — **data prior to 2022-01-01 only**; later replaced by transfer-type columns. |
+| `spam` | Calls identified as spam. |
+| `message` | Calls routed to a pre-recorded message. |
+| `handled` | Total handled calls. |
+| `answered` | Total answered calls. |
+| `answered_transferred` | Answered calls that were then transferred. |
+
+### Open-hours variants (during business hours only)
+| Column | Definition |
+|--------|-----------|
+| `open_inbound_calls` | Inbound calls received during open hours. |
+| `open_missed_calls` | Missed calls during open hours. |
+| `open_abandoned_calls` | Abandoned calls during open hours. |
+| `open_transferred` | Transferred calls during open hours. *(Not defined in the daily-export doc table; name-inferred.)* |
+
+### Service level & speed
+| Column | Definition |
+|--------|-----------|
+| `asa` | **Average speed to answer** = (date_connected or date_callback_connected) − (earliest of date_queued or date_first_rang) ÷ number of calls. **Minutes.** |
+| `service_level` | The **count** of calls that hit service level (not a percentage). Contact Center targets only. |
+| `time_in_system` | Average time a call spent in the system. Contact Center targets only. **Minutes.** |
+
+### Durations — all in **minutes**
+| Column | Definition |
+|--------|-----------|
+| `minutes` | Total minutes across all calls. |
+| `acd` | Average call duration of all connected/completed inbound + outbound calls. |
+| `aht` | Average handle time. Contact Center targets only. |
+| `inbound_minutes` | Total inbound minutes. |
+| `outbound_minutes` | Total outbound minutes. |
+| `ringing_duration` / `avg_ringing_duration` | Total / average time spent ringing. |
+| `queued_duration` / `avg_queued_duration` | Total / average time spent in queue. |
+| `hold_duration` / `avg_hold_duration` | Total / average time spent on hold. |
+| `talk_duration` / `avg_talk_duration` | Total / average talk time. |
+| `wrapup_duration` / `avg_wrapup_duration` | Total / average wrap-up (after-call work) time. |
+
+### Voicemails
+| Column | Definition |
+|--------|-----------|
+| `voicemails` | Number of voicemails received. |
+| `missed_voicemails` | Missed calls that resulted in a voicemail. |
+| `other_voicemails` | Other voicemails. *(Not defined in the daily-export doc table; name-inferred.)* |
+| `in_queue_voicemail` | Calls that went to voicemail from the queue. |
+| `dtmf_voicemail` | Unanswered calls that ended in the IVR to leave a voicemail (must have voicemails). |
+| `direct_to_voicemail` | Calls that went directly to voicemail. |
+| `transfer_voicemail` | Calls transferred to voicemail. |
+
+### Callbacks
+| Column | Definition |
+|--------|-----------|
+| `callbacks_requested` | Inbound calls where the caller requested a callback. |
+| `callbacks_completed` | Outbound calls Dialpad placed to a caller who requested a callback. |
+| `callbacks_cancelled` | Caller declined the callback. |
+| `callbacks_connected` | Completed callbacks that successfully connected to an agent. |
+| `callbacks_unconnected` | Completed callbacks that did not connect to an agent. |
+| `callback_agent_missed_rejected` | Callbacks the agent missed or rejected. *(Name-inferred; not in the daily-export doc table.)* |
+| `direct_callback_agent_missed_rejected` | Direct callbacks the agent missed or rejected. *(Name-inferred.)* |
+| `direct_callback_cancelled` | Direct callbacks that were cancelled. *(Name-inferred.)* |
+
+### Transfers
+| Column | Definition |
+|--------|-----------|
+| `missed_transferred` | Inbound calls that rang, no one picked up, and were transferred to another target. |
+| `outbound_connected` | Outbound calls that connected to their target. |
+| `connected_transferred` | Outbound calls that were transferred. |
+| `transferred_out` | Calls transferred out to other targets. |
+| `transferred_in` | Calls transferred into this target from other targets. |
+| `dtmf_transfer` | Calls auto-transferred via an automated response menu. |
+| `auto_transfer` | Calls transferred to another office, Contact Center, department, geo router, team member, or room phone. |
+| `router_transfer` | Calls transferred based on the caller's area code. |
+| `forward_transfer` | Calls transferred from a desk phone to another number. |
+| `scripted_ivr_transfer` | Calls transferred via a scripted IVR. *(Name-inferred; not in the daily-export doc table.)* |
+
+---
+
+## 3. Computing your KPIs from this export
+
+```text
+Monthly call volume = sum(all_calls)            # or sum(inbound_calls) for inbound only
+Abandon rate        = sum(abandoned) / sum(inbound_calls)
+                      # exclude short hang-ups: (abandoned - short_abandoned) / inbound_calls
+                      # business hours only:    open_abandoned_calls / open_inbound_calls
+ASA (period)        = sum(asa * answered_per_day) / sum(answered_per_day)   # weight by answered; do NOT plain-average daily asa. Minutes.
+```
+
+---
+
+## 4. Other `stat_type` values (what each returns)
+
+`group_by` applies to `calls` only; the others ignore it.
+
+| `stat_type` | Returns | export_type notes |
+|-------------|---------|-------------------|
+| `calls` | Call volume / handling metrics (columns above). | `stats` or `records`. |
+| `onduty` | Agent on-duty / availability time — your occupancy & staffing picture. | `stats` or `records`. |
+| `csat` | Customer satisfaction survey results. | **`records` only.** Requires `target_id`+`target_type`. |
+| `dispositions` | Call outcome/disposition tags. | **`records` only.** Requires `target_id`+`target_type`. |
+| `recordings` | Call recording metadata. | `stats` or `records`. |
+| `screenshare` | Screen-share session data. | `stats` or `records`. |
+| `texts` | SMS/MMS message stats. | `stats` or `records`. |
+| `voicemails` | Voicemail stats. | `stats` or `records`. |
+
+> Columns for non-`calls` stat types differ from the table in §2 and aren't enumerated
+> here — pull one with `export_type=stats` and inspect the header, or see
+> help.dialpad.com/docs/read-your-exported-analytics.
+
+---
+
+## Sources
+- Request body: `python-dialpad` SDK schema `dialpad/schemas/stats.py` (`ProcessStatsMessage`).
+- CSV columns: help.dialpad.com/docs/read-your-exported-analytics (Daily/Group statistics export).
+- Concepts & caching/rate limits: developers.dialpad.com/docs/stats-api-dialpad-analytics,
+  developers.dialpad.com/reference/statscreate.
+- Items marked *(name-inferred)* appear in the live CSV header but are not defined in the
+  daily-export doc table; descriptions are best-effort — confirm against the Analytics
+  Glossary before reporting them externally.
