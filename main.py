@@ -21,6 +21,7 @@ parser.add_argument("--days-end", type=int, default=31,
                     help="Bound on how long ago the stats are pulled, default is 31")
 
 #can be done with office ids too, but not as useful to me right now
+#client.offices.list()
 ccs = {cc["id"]: cc["name"] for cc in client.call_centers.list()}
 with open("cc_ids.json", "w") as f:
     json.dump(ccs, f, indent=2)
@@ -46,26 +47,20 @@ def run_stats(target_ids, **body):
                 results[cc_id] = requests.get(result["download_url"]).text 
                 break
             if status == "failed":
-                #maybe just fail for the one cc
+                #maybe just fail for the one cc, continue checking
                 raise RuntimeError("Stats job failed")
             time.sleep(3)
     return results
 
-#print call center and office ids
-# for cc in client.call_centers.list():
-#     print(cc["id"], cc["name"])
-# for office in client.offices.list():
-#     print(office["id"], office["name"])
-
 args = parser.parse_args()
-# Group export: one row per call center with period totals — ideal for monthly KPIs
+
 results = run_stats(
     target_ids=args.target_ids,
     stat_type="calls",
     export_type="stats",
     target_type="callcenter",
     target_id=-1,
-    group_by="date",     # period rollup, no per-day rows  
+    group_by="date",    
     days_ago_start=1,
     days_ago_end=31,
     timezone="America/Phoenix",
@@ -74,6 +69,9 @@ results = run_stats(
 with open("cc_ids.json") as f:
     id_to_name = json.load(f)
 for cc_id, csv_text in results.items():
+    #for manually inspecting csvs below
+    # with open("example.csv", "w") as f:
+    #     f.write(csv_text)
     print(f"CC Name: {id_to_name[str(cc_id)]}")
 
     rows = list(csv.DictReader(io.StringIO(csv_text)))   # one row per day

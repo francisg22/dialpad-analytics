@@ -3,3 +3,4 @@ cc_ids.txt
 office_ids.txt
 notes.txt
 cc_ids.json
+*.csv
