@@ -5,9 +5,19 @@ import io
 import csv
 from dotenv import load_dotenv
 import os
+import argparse
 
 load_dotenv()
 client = DialpadClient(token=os.getenv("API_KEY"))
+
+parser = argparse.ArgumentParser(description="Pull Dialpad API Analytics")
+
+parser.add_argument("--target-id", type=int, required=True, nargs="+",
+                    help="Call center IDs")
+parser.add_argument("--days-start", type=int, defualt=1,
+                    help="Bound on how recent the stats are pulled, default is 1")
+parser.add_argument("--days-end", type=int, defualt=31,
+                    help="Bound on how long ago the stats are pulled, default is 31")
 
 
 #dialpad only processes new requests after 3 hours, requests with the same
@@ -35,13 +45,14 @@ def run_stats(**body):
 #     print(cc["id"], cc["name"])
 # for office in client.offices.list():
 #     print(office["id"], office["name"])
-    
+
+args = parser.parse_args()
 # Group export: one row per call center with period totals — ideal for monthly KPIs
 csv_text = run_stats(
     stat_type="calls",
     export_type="stats",
     target_type="callcenter",
-    #target_id=, left intentionally blank to mask cc id
+    target_id=args.target_id,
     group_by="date",     # period rollup, no per-day rows  
     days_ago_start=1,
     days_ago_end=31,
