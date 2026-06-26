@@ -90,32 +90,82 @@ Notes:
 ## 2. Returned CSV columns (`stat_type=calls`, `export_type=stats`)
 
 `group_by=date` adds a leading `date` column (one row per day); `group_by=group` omits
-`date` (one row per call center/department). All columns below otherwise match.
+`date` (one row per call center/department).
 
-### Identity / bucketing
+This section is split into **2A — fields kept in our trimmed export** (the columns
+`main.py` writes to `output.csv`) and **2B — fields dropped from our trimmed export**
+(still returned by Dialpad, but filtered out by the `rows_to_keep` allow-list).
+
+> **Calc note:** Counts are integers. Every `avg_*` duration is its matching total
+> `*_duration` ÷ the relevant call count; Dialpad doesn't define each `avg_*` separately
+> in the export doc, so those calcs are the consistent pattern (name-inferred).
+
+### 2A. Fields in the trimmed CSV
+
+#### Identity / bucketing
+| Column | Definition | How it's calculated |
+|--------|-----------|---------------------|
+| `date` | The day the row covers (present with `group_by=date`). | — |
+
+#### Volume (counts)
+| Column | Definition | How it's calculated |
+|--------|-----------|---------------------|
+| `all_calls` | Total of all calls (inbound, outbound, missed, abandoned, and canceled). | inbound + outbound + missed + abandoned + canceled |
+| `inbound_calls` | Total calls with an inbound direction (answered, missed, abandoned, voicemail, unanswered transfer, spam, message, or callback-requested). | count of inbound-direction calls |
+| `outbound_calls` | Total calls with an outbound direction (outbound connected, cancelled, or callback attempts). | count of outbound-direction calls |
+| `missed` | Missed calls — **one or more users were rung but no one accepted**. | count |
+| `abandoned` | Abandoned calls — **caller hung up while waiting, before any user was rung**. | count |
+| `short_abandoned` | Calls classified as short-abandoned (quick hang-ups). **Contact Center targets only** — often excluded from abandon rate. | count |
+| `voicemails` | Number of voicemails received. | count |
+| `handled` | Total handled calls. | inbound + outbound + callbacks that connected |
+| `answered` | Total answered calls. | count of inbound calls successfully connected |
+
+#### Service level & speed
+| Column | Definition | How it's calculated |
+|--------|-----------|---------------------|
+| `asa` | **Average speed to answer.** **Minutes.** | Σ((date_connected or date_callback_connected) − earliest of (date_queued, date_first_rang)) ÷ number of answered calls |
+| `service_level` | The **count** of calls that hit service level (not a percentage). Contact Center targets only. | count of calls meeting the CC service-level target |
+| `abandon_rate` | **Computed by `main.py`, not from Dialpad** — fraction of inbound calls abandoned, excluding short hang-ups. Per combined day. | (abandoned − short_abandoned) ÷ inbound_calls |
+
+#### Durations — all in **minutes**
+| Column | Definition | How it's calculated |
+|--------|-----------|---------------------|
+| `minutes` | Total minutes across all calls. | sum of all call durations |
+| `acd` | Average call duration of all connected/completed inbound + outbound calls. | total connected minutes ÷ connected calls |
+| `aht` | Average handle time. Contact Center targets only. | avg call duration + (total wrap-up ÷ connected calls) |
+| `inbound_minutes` | Total inbound minutes. | sum of inbound call durations |
+| `outbound_minutes` | Total outbound minutes. | sum of outbound call durations |
+| `talk_duration` / `avg_talk_duration` | Total / average talk time. | sum / (sum ÷ calls) |
+| `queued_duration` / `avg_queued_duration` | Total / average time spent in queue. | sum / (sum ÷ calls) |
+| `wrapup_duration` / `avg_wrapup_duration` | Total / average wrap-up (after-call work) time. | sum / (sum ÷ calls) |
+| `hold_duration` / `avg_hold_duration` | Total / average time spent on hold. | sum / (sum ÷ calls) |
+
+#### Callbacks (counts)
+| Column | Definition | How it's calculated |
+|--------|-----------|---------------------|
+| `callbacks_requested` | Inbound calls where the caller requested a callback. | count |
+| `callbacks_completed` | Outbound calls Dialpad placed to a caller who requested a callback. | count |
+| `callbacks_cancelled` | Caller declined the callback (or it was missed). | count |
+
+### 2B. Fields dropped from the trimmed CSV
+
+Still returned by Dialpad in the full export — filtered out by `rows_to_keep` in `main.py`.
+
+#### Identity / bucketing
 | Column | Definition |
 |--------|-----------|
-| `date` | The day the row covers (present with `group_by=date`). |
-| `timezone` | Timezone the data was bucketed in. |
+| `timezone` | Timezone the data was bucketed in (constant per request, not a metric). |
 
-### Volume (counts)
+#### Volume (counts)
 | Column | Definition |
 |--------|-----------|
-| `all_calls` | Total of all calls (inbound, outbound, missed, abandoned, and canceled). |
-| `inbound_calls` | Total inbound calls (answered, missed, abandoned, voicemail, unanswered transfer, spam, message, or callback-requested). |
-| `outbound_calls` | Total outbound calls (outbound connected, cancelled, or callback attempts). |
-| `missed` | Number of missed calls. |
-| `abandoned` | Number of abandoned calls (caller hung up while waiting). |
-| `short_abandoned` | Calls classified as short-abandoned (quick hang-ups). **Contact Center targets only** — often excluded from abandon rate. |
 | `cancelled` | Outbound calls that rang out and never connected to a human or voicemail. |
 | `forwarded` | Forwarded calls — **data prior to 2022-01-01 only**; later replaced by transfer-type columns. |
 | `spam` | Calls identified as spam. |
 | `message` | Calls routed to a pre-recorded message. |
-| `handled` | Total handled calls. |
-| `answered` | Total answered calls. |
 | `answered_transferred` | Answered calls that were then transferred. |
 
-### Open-hours variants (during business hours only)
+#### Open-hours variants (during business hours only)
 | Column | Definition |
 |--------|-----------|
 | `open_inbound_calls` | Inbound calls received during open hours. |
@@ -123,31 +173,19 @@ Notes:
 | `open_abandoned_calls` | Abandoned calls during open hours. |
 | `open_transferred` | Transferred calls during open hours. *(Not defined in the daily-export doc table; name-inferred.)* |
 
-### Service level & speed
+#### Service level & speed
 | Column | Definition |
 |--------|-----------|
-| `asa` | **Average speed to answer** = (date_connected or date_callback_connected) − (earliest of date_queued or date_first_rang) ÷ number of calls. **Minutes.** |
-| `service_level` | The **count** of calls that hit service level (not a percentage). Contact Center targets only. |
 | `time_in_system` | Average time a call spent in the system. Contact Center targets only. **Minutes.** |
 
-### Durations — all in **minutes**
+#### Durations — all in **minutes**
 | Column | Definition |
 |--------|-----------|
-| `minutes` | Total minutes across all calls. |
-| `acd` | Average call duration of all connected/completed inbound + outbound calls. |
-| `aht` | Average handle time. Contact Center targets only. |
-| `inbound_minutes` | Total inbound minutes. |
-| `outbound_minutes` | Total outbound minutes. |
 | `ringing_duration` / `avg_ringing_duration` | Total / average time spent ringing. |
-| `queued_duration` / `avg_queued_duration` | Total / average time spent in queue. |
-| `hold_duration` / `avg_hold_duration` | Total / average time spent on hold. |
-| `talk_duration` / `avg_talk_duration` | Total / average talk time. |
-| `wrapup_duration` / `avg_wrapup_duration` | Total / average wrap-up (after-call work) time. |
 
-### Voicemails
+#### Voicemails
 | Column | Definition |
 |--------|-----------|
-| `voicemails` | Number of voicemails received. |
 | `missed_voicemails` | Missed calls that resulted in a voicemail. |
 | `other_voicemails` | Other voicemails. *(Not defined in the daily-export doc table; name-inferred.)* |
 | `in_queue_voicemail` | Calls that went to voicemail from the queue. |
@@ -155,19 +193,16 @@ Notes:
 | `direct_to_voicemail` | Calls that went directly to voicemail. |
 | `transfer_voicemail` | Calls transferred to voicemail. |
 
-### Callbacks
+#### Callbacks
 | Column | Definition |
 |--------|-----------|
-| `callbacks_requested` | Inbound calls where the caller requested a callback. |
-| `callbacks_completed` | Outbound calls Dialpad placed to a caller who requested a callback. |
-| `callbacks_cancelled` | Caller declined the callback. |
 | `callbacks_connected` | Completed callbacks that successfully connected to an agent. |
 | `callbacks_unconnected` | Completed callbacks that did not connect to an agent. |
 | `callback_agent_missed_rejected` | Callbacks the agent missed or rejected. *(Name-inferred; not in the daily-export doc table.)* |
 | `direct_callback_agent_missed_rejected` | Direct callbacks the agent missed or rejected. *(Name-inferred.)* |
 | `direct_callback_cancelled` | Direct callbacks that were cancelled. *(Name-inferred.)* |
 
-### Transfers
+#### Transfers
 | Column | Definition |
 |--------|-----------|
 | `missed_transferred` | Inbound calls that rang, no one picked up, and were transferred to another target. |
@@ -187,11 +222,19 @@ Notes:
 
 ```text
 Monthly call volume = sum(all_calls)            # or sum(inbound_calls) for inbound only
-Abandon rate        = sum(abandoned) / sum(inbound_calls)
-                      # exclude short hang-ups: (abandoned - short_abandoned) / inbound_calls
-                      # business hours only:    open_abandoned_calls / open_inbound_calls
+Abandon rate        = (sum(abandoned) - sum(short_abandoned)) / sum(inbound_calls)
+                      # short hang-ups excluded by default (this is what main.py computes,
+                      # per-day and for the period summary).
+                      # include short hang-ups:  sum(abandoned) / sum(inbound_calls)
+                      # business hours only:     open_abandoned_calls / open_inbound_calls
 ASA (period)        = sum(asa * answered_per_day) / sum(answered_per_day)   # weight by answered; do NOT plain-average daily asa. Minutes.
 ```
+
+**Combining averages across call centers:** never sum or plain-average an average. For
+`avg_*_duration`, recover each row's implied count (`total_duration / avg_duration`), sum
+totals and counts separately, then divide. For `asa`/`acd`/`aht`, carry weighted numerators
+(`asa × answered`, `aht`/`acd × handled`), sum, then divide by the summed weight. Counts and
+total durations sum directly. (`main.py` does this via a pandas `groupby("date")`.)
 
 ---
 
