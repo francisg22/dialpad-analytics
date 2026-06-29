@@ -55,22 +55,34 @@ with open(args.config) as f:
     j = json.load(f)
 
 id_list = j["cc_ids"] #required, script will not run without
-#below are not required in config, defaults are 2nd
+#below are not required in config, defaults are 2nd arg
+#will run without the below args in config
+#more info in DIALPAD_STATS_REFERENCE.md about the args
 days_ago_start = j.get("days_ago_start", 1)
 days_ago_end = j.get("days_ago_end", 31)
-
+#stat_type types - calls, csat, dispositions, onduty, recordings, screenshare, texts, voicemails
+stat_type = j.get("stat_type", "calls")
+#export types - stats, records
+export_type = j.get("export_type", "stats")
+#target types - callcenter, department, office, user, room, 
+# coachinggroup, coachingteam, staffgroup, unknown
+target_type = j.get("target_type", "callcenter")
+#group by types - date, group, user
+group_by = j.get("group_by", "date")
+#timezone - string (tz database name, e.g. America/Phoenix)
+timezone = j.get("timezone", "America/Phoenix")
 
 summed = ";".join(str(i) for i in id_list)
 results = run_stats(
     target_ids=id_list,
-    stat_type="calls",
-    export_type="stats",
-    target_type="callcenter",
+    stat_type=stat_type,
+    export_type=export_type,
+    target_type=target_type,
     target_id=-1,
-    group_by="date",    
+    group_by=group_by,    
     days_ago_start=days_ago_start,
     days_ago_end=days_ago_end,
-    timezone="America/Phoenix",
+    timezone=timezone,
 )
 
 rows_to_keep = [
