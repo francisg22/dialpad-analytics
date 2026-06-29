@@ -13,14 +13,9 @@ client = DialpadClient(token=os.getenv("API_KEY"))
 
 parser = argparse.ArgumentParser(description="Pull Dialpad API Analytics")
 
-parser.add_argument("--target-ids", type=int, nargs="+",
-                    help="Call center IDs")
+
 parser.add_argument("--config", type=str,
                     help="Path to config file")
-parser.add_argument("--days-start", type=int, default=1,
-                    help="Bound on how recent the stats are pulled, default is 1")
-parser.add_argument("--days-end", type=int, default=31,
-                    help="Bound on how long ago the stats are pulled, default is 31")
 
 #can be done with office ids too, but not as useful to me right now
 #client.offices.list()
@@ -56,12 +51,14 @@ def run_stats(target_ids, **body):
 
 args = parser.parse_args()
 
-id_list = []
-if args.target_ids:
-    id_list = args.target_ids
-elif args.config:
-    with open(args.config) as f:
-        id_list = json.load(f)["cc_ids"]
+with open(args.config) as f:
+    j = json.load(f)
+
+id_list = j["cc_ids"] #required, script will not run without
+#below are not required in config, defaults are 2nd
+days_ago_start = j.get("days_ago_start", 1)
+days_ago_end = j.get("days_ago_end", 31)
+
 
 summed = ";".join(str(i) for i in id_list)
 results = run_stats(
@@ -71,8 +68,8 @@ results = run_stats(
     target_type="callcenter",
     target_id=-1,
     group_by="date",    
-    days_ago_start=1,
-    days_ago_end=31,
+    days_ago_start=days_ago_start,
+    days_ago_end=days_ago_end,
     timezone="America/Phoenix",
 )
 
