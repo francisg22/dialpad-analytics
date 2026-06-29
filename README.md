@@ -20,23 +20,21 @@ prints a period summary.
 
 ## Usage
 
-Pass call-center IDs directly:
-
-```bash
-python main.py --target-ids 2349823 9823749
-```
-
-…or point at a config file:
+Pass in a config file (more about creating below)
 
 ```bash
 python main.py --config configs/test.json
 ```
 
-Output is written to `output.csv` (one combined row per day).
+Output is written to `output.csv`. Each row is a day that contains all the combined stats from all the call centers.
 
 ## Creating a config
 
-Configs live in `configs/` and hold the call-center IDs to pull. Structure:
+Configs live in `configs/` and hold the call-center IDs to pull plus any
+request options. A config is simply just a json file with the below text inside it. Only `cc_ids` is required; everything else falls back to a
+default if omitted.
+
+Minimal config:
 
 ```json
 {
@@ -44,7 +42,37 @@ Configs live in `configs/` and hold the call-center IDs to pull. Structure:
 }
 ```
 
-- `cc_ids` — **required.** A list of Dialpad call-center IDs to pull and aggregate.
+Full config with all optional keys set to their defaults:
+
+```json
+{
+  "cc_ids": [2349823, 9823749, 123456],
+  "days_ago_start": 1,
+  "days_ago_end": 31,
+  "stat_type": "calls",
+  "export_type": "stats",
+  "target_type": "callcenter",
+  "group_by": "date",
+  "timezone": "America/Phoenix"
+}
+```
+
+| Key | Required | Default | Notes |
+|-----|----------|---------|-------|
+| `cc_ids` | **Yes** | — | List of Dialpad call-center IDs to pull and aggregate. |
+| `days_ago_start` | No | `1` | More-recent bound of the range, in days back from today (`1` = yesterday). Must be the smaller number. |
+| `days_ago_end` | No | `31` | Further-back bound, in days back from today. Must be the larger number. |
+| `stat_type` | No | `calls` | `calls`, `csat`, `dispositions`, `onduty`, `recordings`, `screenshare`, `texts`, `voicemails`. |
+| `export_type` | No | `stats` | `stats` (pre-aggregated) or `records` (one row per event). |
+| `target_type` | No | `callcenter` | `callcenter`, `department`, `office`, `user`, `room`, `coachinggroup`, `coachingteam`, `staffgroup`, `unknown`. |
+| `group_by` | No | `date` | `date`, `group`, or `user`. |
+| `timezone` | No | `America/Phoenix` | tz database name used to bucket data by day. |
+
+> The aggregation logic in this script assumes the default
+> `stat_type=calls`, `export_type=stats`, `group_by=date` shape. Changing these
+> changes the returned columns and may break the `rows_to_keep` trim and the
+> per-day summing. See [`DIALPAD_STATS_REFERENCE.md`](./DIALPAD_STATS_REFERENCE.md)
+> for the full meaning of each parameter.
 
 To find valid IDs, run the script once — it writes every call center's
 `id: name` mapping to `cc_ids.json`.
@@ -85,8 +113,11 @@ The Stats API is asynchronous — you submit a job, then poll for the result.
 > body returns the *same* cached CSV instantly. Change a parameter (e.g.
 > `days_ago_end`) or wait out the window to force fresh processing.
 
+The API is rate limited at 200 POSTs per hour. The way each call center stats are retrieved is that the script first has to POST, and then GET the csv back from the API. So the script is limited by the 200 POSTs per hour for grabbing lots of call centers. The GET is rate limited at 1200 per minute, so it is not an issue.
+
 ## Additional notes
 
-- TODO: document the `--days-start` / `--days-end` flags once wired into the request.
-- `cc_ids.json` is regenerated on every run.
-- Output rounding is left to the consumer — full precision is kept on disk.
+- Need to verify if the way each average is calculated is fine
+- Each output CSV starts with a column where each row is the same, it is just the list of call center IDs used. It is there to keep the metadata tightly coupled with the actual data.
+- Right now the csv has a lot of columns sliced off, modify rows_to_keep to get more columns or less columns
+- Script outputs to stdout just for visibility and to show its done, not really needed.
